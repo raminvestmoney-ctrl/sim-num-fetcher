@@ -115,23 +115,23 @@ def cmd_fetch(chat_id):
 
 def cmd_send(chat_id):
     with lock:
-        data = list(collected)
+        mapping = {e['port']: e['number'] for e in collected}
 
-    if not data:
-        send_msg(chat_id,
-            "📭 No numbers collected yet.\n"
-            "Send /fetch then trigger SMS from modem panel."
-        )
-        return
+    lines = []
+    # Generate raw list for direct copy-paste (Line 1 = Port 1, etc.)
+    for p in range(1, TOTAL_PORTS + 1):
+        num = mapping.get(str(p), "missing")
+        lines.append(num)
 
-    # Clean format: port | number, line by line
-    lines = [f"Port {e['port']} | {e['number']}" for e in data]
-    full  = "\n".join(lines)
+    full = "\n".join(lines)
 
+    # Send in chunks (Telegram limit is 4096 chars)
     for i in range(0, len(full), 4000):
         send_msg(chat_id, f"`{full[i:i+4000]}`")
 
-    send_msg(chat_id, f"✅ *{len(data)}* numbers total.")
+    with lock:
+        count = len(collected)
+    send_msg(chat_id, f"✅ Collected: *{count}/{TOTAL_PORTS}*")
 
 def cmd_status(chat_id):
     with lock:
