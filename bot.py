@@ -11,8 +11,10 @@ How to use:
 
 import os
 import re
+import json
 import threading
 import requests
+from datetime import datetime, timezone
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 
@@ -21,10 +23,31 @@ load_dotenv()
 app = Flask(__name__)
 
 # ── Config ─────────────────────────────────────────────────────
-BOT_TOKEN   = os.getenv("BOT_TOKEN")
-ALLOWED_ID  = int(os.getenv("ALLOWED_CHAT_ID", "0"))
-WEBHOOK_URL = os.getenv("WEBHOOK_URL", "")
-TOTAL_PORTS = int(os.getenv("TOTAL_PORTS", "32"))
+BOT_TOKEN      = os.getenv("BOT_TOKEN")
+ALLOWED_ID     = int(os.getenv("ALLOWED_CHAT_ID", "0"))
+WEBHOOK_URL    = os.getenv("WEBHOOK_URL", "")
+TOTAL_PORTS    = int(os.getenv("TOTAL_PORTS", "32"))
+SPREADSHEET_ID = os.getenv("SPREADSHEET_ID", "")
+
+# ── Google Sheets client ────────────────────────────────────────
+_sheets_client = None
+try:
+    from google.oauth2 import service_account
+    from googleapiclient.discovery import build
+
+    _raw_creds = os.getenv("GOOGLE_CREDENTIALS", "")
+    if _raw_creds and SPREADSHEET_ID:
+        _creds_info = json.loads(_raw_creds)
+        _creds = service_account.Credentials.from_service_account_info(
+            _creds_info,
+            scopes=["https://www.googleapis.com/auth/spreadsheets"],
+        )
+        _sheets_client = build("sheets", "v4", credentials=_creds, cache_discovery=False)
+        print("[Sheets] ✅ Google Sheets client initialised")
+    else:
+        print("[Sheets] ⚠️  GOOGLE_CREDENTIALS or SPREADSHEET_ID not set — sheet sync disabled")
+except Exception as _e:
+    print(f"[Sheets] ❌ Failed to initialise Google Sheets client: {_e}")
 
 TG_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 lock = threading.Lock()
@@ -138,6 +161,25 @@ def cmd_clear(chat_id):
         listening = False
     send_msg(chat_id, "🗑 Cleared! Send /fetch to start fresh.")
 
+# ── Google Sheets helper ────────────────────────────────────────
+def append_to_sheet(port, number):
+    """Append a [port, number, timestamp] row to the configured Google Sheet."""
+    if not _sheets_client or not SPREADSHEET_ID:
+        return
+    try:
+        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        body = {"values": [[str(port), number, timestamp]]}
+        _sheets_client.spreadsheets().values().append(
+            spreadsheetId=SPREADSHEET_ID,
+            range="Sheet1!A:C",
+            valueInputOption="RAW",
+            insertDataOption="INSERT_ROWS",
+            body=body,
+        ).execute()
+        print(f"[Sheets] ✅ Appended row → Port {port} | {number} | {timestamp}")
+    except Exception as e:
+        print(f"[Sheets] ❌ Failed to append row: {e}")
+
 # ── SMS Receiver ────────────────────────────────────────────────
 @app.route("/sms", methods=["GET", "POST"])
 def receive_sms():
@@ -165,13 +207,18 @@ def receive_sms():
         print(f"[SMS] No number found in: {text}")
         return jsonify(ok=True)
 
+    new_entry = False
     with lock:
         existing = [e["number"] for e in collected]
         if number not in existing:
             collected.append({"port": str(port), "number": number})
             print(f"[SMS] ✅ Port {port} → {number} (total: {len(collected)})")
+            new_entry = True
         else:
             print(f"[SMS] ⚠️ Duplicate skipped: {number}")
+
+    if new_entry:
+        append_to_sheet(port, number)
 
     return jsonify(ok=True)
 
