@@ -204,19 +204,15 @@ def receive_sms():
 
     print(f"[SMS] Port={port} | Text={text}")
 
-    number = extract_number(text)
-    if not number:
-        print(f"[SMS] No number found in: {text}")
-        return jsonify(ok=True)
-
+    # Simply collect the port number
     with lock:
-        existing = [e["number"] for e in collected]
-        if number not in existing:
-            collected.append({"port": str(port), "number": number})
-            print(f"[SMS] ✅ Port {port} → {number} (total: {len(collected)})")
-            append_to_sheet(port, number)
+        existing_ports = [e["port"] for e in collected]
+        if str(port) not in existing_ports:
+            collected.append({"port": str(port), "number": str(port)})
+            print(f"[SMS] ✅ Port {port} received SMS (total: {len(collected)})")
+            append_to_sheet(port, str(port))
         else:
-            print(f"[SMS] ⚠️ Duplicate skipped: {number}")
+            print(f"[SMS] ⚠️ Port {port} already collected")
 
     return jsonify(ok=True)
 
