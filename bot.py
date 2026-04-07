@@ -184,6 +184,24 @@ def telegram_webhook():
     elif "/clear" in text:  cmd_clear(chat_id)
     return jsonify(ok=True)
 
+@app.route("/bulk-test", methods=["GET"])
+def bulk_test():
+    """Simulates activity on all 32 ports for sheet testing"""
+    if not listening:
+        return "Bot not listening."
+    
+    for p in range(1, TOTAL_PORTS + 1):
+        fake_num = f"0300{str(p).zfill(7)}"
+        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        with lock:
+            # Add to memory
+            collected.append({"port": str(p), "number": fake_num, "time": now})
+        
+        # Update Google sheet row by row
+        threading.Thread(target=update_sheet_row, args=(str(p), fake_num, now)).start()
+        
+    return f"Simulated test for {TOTAL_PORTS} ports! Check your Sheet and Telegram."
+
 @app.route("/", methods=["GET"])
 def index():
     return "✅ SIM Bot Running with Google Sheets Auto-Export."
