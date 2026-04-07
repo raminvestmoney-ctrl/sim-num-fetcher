@@ -11,8 +11,10 @@ How to use:
 
 import os
 import re
+import json
 import threading
 import requests
+from datetime import datetime
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 
@@ -25,6 +27,48 @@ BOT_TOKEN   = os.getenv("BOT_TOKEN")
 ALLOWED_ID  = int(os.getenv("ALLOWED_CHAT_ID", "0"))
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "")
 TOTAL_PORTS = int(os.getenv("TOTAL_PORTS", "32"))
+
+# ── Google Sheets Setup (Improved) ────────────────────────────────────────
+gc = None
+SPREADSHEET_ID = os.getenv("SPREADSHEET_ID")
+GOOGLE_CREDENTIALS = os.getenv("GOOGLE_CREDENTIALS")
+
+if GOOGLE_CREDENTIALS:
+    try:
+        import gspread
+        from google.oauth2.service_account import Credentials
+
+        # Handle both normal JSON and accidentally quoted JSON
+        cred_str = GOOGLE_CREDENTIALS.strip()
+        if cred_str.startswith('"') and cred_str.endswith('"'):
+            cred_str = cred_str[1:-1].replace('\\"', '"')  # fix escaped quotes
+
+        creds_dict = json.loads(cred_str)
+        scopes = [
+            "https://spreadsheets.google.com/feeds",
+            "https://www.googleapis.com/auth/drive"
+        ]
+        credentials = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+        gc = gspread.authorize(credentials)
+        print("[Google Sheets] ✅ Service account loaded successfully")
+    except Exception as e:
+        print(f"[Google Sheets] ❌ Failed to load credentials: {e}")
+        gc = None
+else:
+    print("[Google Sheets] No GOOGLE_CREDENTIALS found")
+
+def append_to_sheet(port, number):
+    """Append a row to Google Sheet with port, number, and timestamp."""
+    if not gc or not SPREADSHEET_ID:
+        return
+    try:
+        sheet = gc.open_by_key(SPREADSHEET_ID)
+        worksheet = sheet.sheet1
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        worksheet.append_row([str(port), number, timestamp])
+        print(f"[Google Sheets] ✅ Appended: Port {port} | {number} | {timestamp}")
+    except Exception as e:
+        print(f"[Google Sheets] ❌ Failed to append: {e}")
 
 TG_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 lock = threading.Lock()
@@ -170,6 +214,7 @@ def receive_sms():
         if number not in existing:
             collected.append({"port": str(port), "number": number})
             print(f"[SMS] ✅ Port {port} → {number} (total: {len(collected)})")
+            append_to_sheet(port, number)
         else:
             print(f"[SMS] ⚠️ Duplicate skipped: {number}")
 
