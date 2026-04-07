@@ -2,18 +2,11 @@
 Skyline GoIP — SIM Number Fetcher Bot
 ══════════════════════════════════════
 How to use:
-  1. Send /fetch in Telegram → bot starts listening
-  2. In modem panel, send MNP to correct shortcode per port:
-       Ufone   → MNP to 667
-       Jazz    → MNP to 7000
-       Zong    → MNP to 310
-       Telenor → MNP to 7421
-  3. Carrier replies come in → modem forwards to this bot
-  4. Send /send in Telegram → get full clean list
-  5. Send /clear to reset and start fresh
-
-Railway variables needed:
-  BOT_TOKEN, ALLOWED_CHAT_ID, WEBHOOK_URL, TOTAL_PORTS
+  1. Send /fetch → bot starts listening
+  2. Send MNP to correct shortcode per port in modem panel
+  3. Carrier replies → bot collects numbers
+  4. Send /send → get clean 32-line list (missing ports shown)
+  5. Send /clear to reset
 """
 
 import os
@@ -32,34 +25,26 @@ BOT_TOKEN   = os.getenv("BOT_TOKEN")
 ALLOWED_ID  = int(os.getenv("ALLOWED_CHAT_ID", "0"))
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "")
 TOTAL_PORTS = int(os.getenv("TOTAL_PORTS", "32"))
-# ───────────────────────────────────────────────────────────────
 
-TG_API   = f"https://api.telegram.org/bot{BOT_TOKEN}"
-lock     = threading.Lock()
-collected = []   # [{ "port": "1", "number": "03xxxxxxxxx" }]
+TG_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
+lock = threading.Lock()
+
+collected = []      # [{ "port": "1", "number": "03xxxxxxxxx" }]
 listening = False
 
 # ── Carrier SMS reply patterns ──────────────────────────────────
-# Each carrier replies differently — we try all patterns
 CARRIER_PATTERNS = [
-    # Ufone: "Your Mobile Number is 0333xxxxxxx"
     r'(?:your\s+(?:mobile\s+)?(?:number|no\.?)\s+is\s*:?\s*)(\+?92\d{10}|0\d{10})',
-    # Jazz: "Your Jazz number is 03xxxxxxxxx"
     r'(?:your\s+jazz\s+(?:number|no\.?)\s+is\s*:?\s*)(\+?92\d{10}|0\d{10})',
-    # Zong: "Your number is 031xxxxxxxx"
     r'(?:your\s+(?:zong\s+)?(?:number|no\.?)\s+is\s*:?\s*)(\+?92\d{10}|0\d{10})',
-    # Telenor: "Aapka number 034xxxxxxxx hai"
     r'(?:aapka\s+(?:telenor\s+)?number\s+)(\+?92\d{10}|0\d{10})',
-    # Generic fallback: any Pakistani number in the SMS
     r'(\+92\d{10})',
     r'(92\d{10})',
     r'(0[3]\d{9})',
 ]
 
 # ── Normalize number ────────────────────────────────────────────
-
 def normalize(number):
-    """Convert any format to 0xxxxxxxxxx"""
     number = re.sub(r'[\s\-]', '', number)
     if number.startswith('+92'):
         number = '0' + number[3:]
@@ -68,7 +53,6 @@ def normalize(number):
     return number
 
 def extract_number(text):
-    """Try all carrier patterns to extract number from SMS reply."""
     for pattern in CARRIER_PATTERNS:
         match = re.search(pattern, text, re.IGNORECASE)
         if match:
@@ -76,7 +60,6 @@ def extract_number(text):
     return None
 
 # ── Telegram ────────────────────────────────────────────────────
-
 def send_msg(chat_id, text, parse_mode="Markdown"):
     requests.post(f"{TG_API}/sendMessage", json={
         "chat_id": chat_id,
@@ -87,8 +70,8 @@ def send_msg(chat_id, text, parse_mode="Markdown"):
 def set_commands():
     requests.post(f"{TG_API}/setMyCommands", json={"commands": [
         {"command": "fetch",  "description": "📡 Start collecting SIM numbers"},
-        {"command": "send",   "description": "📤 Send full number list"},
-        {"command": "status", "description": "ℹ️ Numbers collected so far"},
+        {"command": "send",   "description": "📤 Send 32-line list"},
+        {"command": "status", "description": "ℹ️ Check progress"},
         {"command": "clear",  "description": "🗑 Clear list and reset"},
     ]})
 
@@ -98,41 +81,45 @@ def set_webhook():
         print(f"[Webhook] {r.json()}")
 
 # ── Commands ────────────────────────────────────────────────────
-
 def cmd_fetch(chat_id):
     global listening
     with lock:
         listening = True
     send_msg(chat_id,
         "✅ *Listening for SMS replies!*\n\n"
-        "Now go to modem panel and send:\n"
-        "• Ufone → `MNP` to `667`\n"
-        "• Jazz → `MNP` to `7000`\n"
-        "• Zong → `MNP` to `310`\n"
-        "• Telenor → `MNP` to `7421`\n\n"
-        "Send /status to check progress.\n"
-        "Send /send when done."
+        "Now send MNP to correct shortcode per port:\n"
+        "• Ufone → `667`\n"
+        "• Jazz → `7000`\n"
+        "• Zong → `310`\n"
+        "• Telenor → `7421`\n\n"
+        "Send /status to check progress."
     )
 
 def cmd_send(chat_id):
     with lock:
         data = list(collected)
 
-    if not data:
-        send_msg(chat_id,
-            "📭 No numbers collected yet.\n"
-            "Send /fetch then trigger SMS from modem panel."
-        )
-        return
+    # Create map: port → number
+    port_map = {item["port"]: item["number"] for item in data}
 
-    # Clean format: port | number, line by line
-    lines = [f"Port {e['port']} | {e['number']}" for e in data]
-    full  = "\n".join(lines)
+    # Build exactly TOTAL_PORTS lines
+    lines = []
+    for p in range(1, TOTAL_PORTS + 1):
+        port_str = str(p)
+        number = port_map.get(port_str, "missing")
+        lines.append(number)
 
+    full = "\n".join(lines)
+
+    # Send the clean list
     for i in range(0, len(full), 4000):
         send_msg(chat_id, f"`{full[i:i+4000]}`")
 
-    send_msg(chat_id, f"✅ *{len(data)}* numbers total.")
+    collected_count = len(data)
+    send_msg(chat_id,
+        f"✅ *{collected_count}* / *{TOTAL_PORTS}* ports loaded\n"
+        f"📤 Full 32-line list sent above (missing ports shown as `missing`)"
+    )
 
 def cmd_status(chat_id):
     with lock:
@@ -140,8 +127,8 @@ def cmd_status(chat_id):
         state = listening
     send_msg(chat_id,
         f"🔄 Listening: *{'Yes' if state else 'No'}*\n"
-        f"📱 Collected: *{count}* numbers\n\n"
-        f"Send /send to get the list."
+        f"📱 Collected: *{count}* / *{TOTAL_PORTS}* ports\n\n"
+        f"Send /send to get the full list."
     )
 
 def cmd_clear(chat_id):
@@ -152,7 +139,6 @@ def cmd_clear(chat_id):
     send_msg(chat_id, "🗑 Cleared! Send /fetch to start fresh.")
 
 # ── SMS Receiver ────────────────────────────────────────────────
-
 @app.route("/sms", methods=["GET", "POST"])
 def receive_sms():
     if not listening:
@@ -160,10 +146,8 @@ def receive_sms():
 
     data = request.args if request.method == "GET" else (request.form or request.args)
 
-    port = (data.get("port") or data.get("line") or
-            data.get("channel") or "?")
-    text = (data.get("text") or data.get("msg") or
-            data.get("message") or data.get("sms") or "")
+    port = (data.get("port") or data.get("line") or data.get("channel") or "?")
+    text = (data.get("text") or data.get("msg") or data.get("message") or data.get("sms") or "")
 
     # Try JSON body
     if not text:
@@ -192,16 +176,15 @@ def receive_sms():
     return jsonify(ok=True)
 
 # ── Telegram Webhook ────────────────────────────────────────────
-
 @app.route("/webhook", methods=["POST"])
 def telegram_webhook():
     data = request.json
     if not data or "message" not in data:
         return jsonify(ok=True)
 
-    msg     = data["message"]
+    msg = data["message"]
     chat_id = msg["chat"]["id"]
-    text    = msg.get("text", "").strip()
+    text = msg.get("text", "").strip()
 
     if ALLOWED_ID and chat_id != ALLOWED_ID:
         send_msg(chat_id, "⛔ Unauthorized.")
@@ -216,7 +199,7 @@ def telegram_webhook():
     else:
         send_msg(chat_id,
             "/fetch — Start listening\n"
-            "/send — Get number list\n"
+            "/send — Get 32-line list\n"
             "/status — Check progress\n"
             "/clear — Reset"
         )
@@ -228,7 +211,6 @@ def index():
     return "✅ SIM Bot running."
 
 # ── Startup ─────────────────────────────────────────────────────
-
 if __name__ == "__main__":
     set_webhook()
     set_commands()
